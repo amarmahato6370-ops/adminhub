@@ -1,244 +1,132 @@
-# Adminhub Implementation Plan
+# Adminhub implementation plan
 
-**Repository:** `amarmahato6370-ops/adminhub`  
-**Status:** Planning only  
-**Prerequisite:** The repository audit found only `README.md`; no application code has been changed.
+**Organization:** matx
+**State:** Planning only; no application feature is implemented by this document.
+**Baseline:** Existing Next.js/TypeScript scaffold at `72580499c852f90856d2f3a4f2efb64395930242`; see [repository audit](repository-audit.md).
+**Decision:** Extend the checkout rather than reinitialize it. Keep the existing App Router, Tailwind, Prisma, and UI primitives. Do not remove application files without a specific replacement and migration rationale.
 
-## 1. Goals and non-goals
+## Assumptions and decision gates
 
-### Goals
+- `matx` is the organization name; its industry and business purpose are **not supplied**. Do not invent financial, legal, or operational rules. No billing/revenue metrics without actual billing data.
+- `[MAIN ENTITY NAME]` is unspecified. A neutral, organization-scoped **Record** represents generic submissions/work items until matx defines its domain. Give it generic title, description, status, dates, category, owner, and assignee fields. Domain-specific custom fields need versioned, validated schemas, not arbitrary executable JSON. Rename only with a migration and API compatibility plan once the real entity is confirmed.
+- Begin with one seeded organization and organization-scoped queries throughout; cross-organization access is denied unless explicitly authorized. Self-registration is **off** by default, so super administrators invite accounts. Super-admin bootstrap is an explicit, one-time development/operations procedure, never a hard-coded default password.
+- Use NextAuth/Auth.js credentials with database-backed revocable sessions **only if the chosen adapter supports the required session behavior**; otherwise implement an audited opaque-session service using hashed session tokens. Choose and document one path before exposing login. Email verification/reset tokens must be hashed at rest and single use.
+- For development, use local filesystem storage outside `public/` and a local email outbox (not real delivery). Production adapters are S3-compatible storage and an email provider behind interfaces. Disable upload availability until scanning policy/provider is selected; fail closed on malware scan failures in production.
+- 2FA, social login, push, scheduled messages/reports, virus scanning, and billing need policy/integration decisions. Provide documented interfaces and explicit disabled states, **not** unfinished security flows presented as enabled features.
+- Confirm privacy retention, record classification, file scanning, organizational tenancy, and required separation of duties before releasing features handling sensitive data. These are product/release gates, not reasons to invent business details.
 
-Build a production-oriented administration platform for `maxi` with secure authentication, server-enforced RBAC, organization/user/staff administration, configurable records and approvals, tasks, notifications, files, reports, audit logs, settings, responsive accessibility, automated tests, and deployment documentation.
+## Architecture and code boundaries
 
-### Non-goals for the first implementation slice
-
-- Do not invent a domain-specific main entity while `[MAIN ENTITY NAME]` is unresolved.
-- Do not integrate paid external services without provider interfaces and environment-based configuration.
-- Do not treat mock dashboard values as production data.
-- Do not replace security controls with frontend-only visibility rules.
-
-## 2. Proposed architecture
-
-Use a Next.js App Router application with TypeScript strict mode. Keep route/page composition in `src/app`, reusable presentation in `src/components`, feature-specific UI and schemas in `src/features`, infrastructure adapters in `src/lib`, and transactional business logic in `src/server`.
-
-Server components should load read models through service functions. Mutations should use validated server actions or versioned route handlers. Every mutation should authenticate, authorize, validate, execute the smallest appropriate transaction, write an audit event, and return a typed success/error result. Database access must remain server-only.
-
-Proposed structure:
+Use Next.js App Router/React/TypeScript strict mode. Server components fetch read models through services; route handlers under `src/app/api/v1` and narrowly scoped server actions handle mutations. Shared services authorize, validate Zod input, perform Prisma transactions, append privacy-safe audit events and notifications, and map failures to stable API error codes. Never import Prisma, secrets, or authorization policy internals into client components. No client-hidden control is an authorization boundary.
 
 ```text
-src/
-  app/
-    (auth)/                 authentication pages
-    (dashboard)/             protected application pages
-    api/v1/                   versioned route handlers
-  components/
-    ui/                      design-system primitives
-    layout/                  shell, navigation, breadcrumbs
-    forms/                   reusable form patterns
-    tables/                  server-driven data tables
-    charts/                  dashboard/report charts
-  features/
-    auth/ users/ roles/ permissions/
-    dashboard/ departments/ teams/
-    records/ approvals/ tasks/
-    notifications/ files/ reports/ audit-logs/
-  lib/
-    auth/ db/ permissions/ validation/
-    security/ storage/ email/ config/
-  server/
-    services/ repositories/ policies/
-  tests/
-prisma/
-  schema.prisma
-  seed.ts
-  migrations/
-docs/
-.github/
-  workflows/
-  copilot-instructions.md
+src/app/(auth)/                 login, verify, reset flows
+src/app/(dashboard)/            authenticated layouts and protected pages
+src/app/api/v1/                versioned API handlers
+src/components/ui/             shared accessible primitives (extend existing Button/Card)
+src/components/{layout,forms,tables,charts}/
+src/features/{auth,users,roles,permissions,dashboard,departments,teams,records,approvals,tasks,notifications,files,reports,audit-logs,settings}/
+src/lib/{auth,db,permissions,validation,security,storage,email}/
+src/server/{services,repositories,policies}/
+src/tests/                     unit/component/API/database fixtures
+prisma/{schema.prisma,migrations/,seed.ts}
+docs/                          API, architecture, database, security, ops, administrator guide
+.github/workflows/             CI and security scanning
 ```
 
-## 3. Domain and database plan
+Keep API handlers thin; use repository functions that always receive scope (organization ID, actor, permitted department/team), never accept a client-supplied organization ID as authority. Use Prisma select/projection and batched reads to avoid N+1. Normalize query parameters with one pagination/filter/sort schema; allowlist searchable/sortable columns, bound result sizes, and add indexes matching actual query plans. Serialize enums and timestamps consistently. Return `{ success: true, data, message, pagination? }` or `{ success: false, error: { code, message, details? } }`; validation=400, unauthenticated=401, forbidden=403, missing/hidden=404, conflict=409, rate limited=429. Do not return stack traces or secrets.
 
-Create a normalized Prisma schema with UUIDs/secure IDs, `createdAt`/`updatedAt`, indexes, unique constraints, foreign keys, and soft-delete fields where appropriate.
+## Data and migration design
 
-### Identity and access
+Extend the current four **placeholder** Prisma models; do not use the existing raw `Session.token` or `User.role` as the finished security model. Add one reviewed initial migration and subsequent additive migrations; avoid `db push` against production. UUID keys, timestamps, foreign keys, uniqueness/indexes, and soft deletion are mandatory where applicable. Seed permission definitions and synthetic development accounts only in an explicitly development-only seed workflow.
 
-- `User`, `Role`, `Permission`, `RolePermission`, `UserRole`.
-- `Session`, `VerificationToken`, `PasswordResetToken`.
-- Optional `TwoFactorMethod`, recovery-code representation, login-attempt/history models.
-- Explicit status fields for active, suspended, invited, and deleted states.
+| Domain | Planned models and constraints |
+| --- | --- |
+| Identity | `User` (normalized email, password hash, verified/suspended/deleted timestamps, org FK); `Role`, `Permission`, `UserRole`, `RolePermission` with unique `(org, user, role)`/`(role, permission)`; `Session` (hashed token, expiry, revoked timestamp, user/org FK, last-seen); hashed `VerificationToken`, `PasswordResetToken`; `LoginAttempt`/`LoginHistory`, optional 2FA enrollment/recovery data encrypted or hashed appropriately. |
+| Organization | `Organization` (locale, timezone, currency), `Department`, `Team`, `TeamMember`, `StaffProfile`, `Assignment`, `WorkSchedule`, `PerformanceNote`; composite unique names within organization, membership references and manager scope. |
+| Records | `Record` (org, owner/assignee/reviewer FKs, category, priority, due date, lifecycle, `deletedAt`, `archivedAt`), `Category`, `Tag`/`RecordTag`, validated `CustomFieldDefinition`/`RecordFieldValue`, `EntityStatusHistory`, `EntityAttachment`, `ApprovalDecision`, `Comment`; append status transitions and reject/approve events transactionally with the record. |
+| Work/communication | `Task` (org, team/assignee, parent, due date, recurrence rule, status), `TaskReminder`, `TaskAttachment`, `Notification` (recipient, type, read/deleted timestamp), `NotificationPreference`, `NotificationTemplate`, `Message`/`Announcement` and delivery history if applicable. |
+| Files/audit/settings | `File` (owner, folder, opaque key, MIME, length, scan state, visibility, deletedAt), `FileFolder`; `AuditLog` (event ID, actor, scoped entity, action, sanitized before/after, createdAt, optional lawful IP/agent); `SystemSetting` with org/category/key uniqueness, typed validated value, non-secret values only; `SavedReportFilter`/scheduled-report configuration when implemented. |
 
-### Organization
+Indexes: `(organizationId, status, createdAt)`, `(organizationId, assigneeId, dueAt)`, `(organizationId, deletedAt)`, `(userId, revokedAt, expiresAt)`, `(recipientId, readAt)`, `(entityType, entityId, createdAt)` plus email uniqueness and relationship indexes. Validate on PostgreSQL using generated migrations and constraints. Place login/approval/role/delete actions and their audit writes in one transaction; notifications may be queued via transactional outbox if delivery is asynchronous. Build soft-delete filters into read services and test them; no implicit hard delete.
 
-- `Organization`, `Department`, `Team`, team membership, assignments, job titles, staff status.
-- Organization scoping must be included in queries and authorization policies even if the initial deployment has one organization.
+## Authentication and authorization
 
-### Product records
+Server-side policy entry points: `requireSession()`, `authorize(actor, permission, scope)`, `canReadRecord`, `canManageUser`, `canApproveRecord`, and `requireSettingPermission`. Refresh or re-evaluate effective permissions from DB on privileged actions; do not trust a long-lived role claim. Session cookies: `HttpOnly`, `Secure` in production, `SameSite=Lax` or stricter; origin/CSRF defenses for cookie-authenticated mutations. Passwords: adaptive hashing (Argon2id or vetted bcrypt), strength checks, throttled failed attempts backed by shared storage, generic account recovery responses, token expiry and single use. Revoke sessions on suspension, password reset, role changes where appropriate, and logout-all; enumerate/revoke active sessions safely. Verify email before protected access. Remember-me changes expiry, not cookie security.
 
-Use a neutral `ApplicationRecord`/`Record` until the main entity is named. Include owner, assignee, category, tags, priority, due date, lifecycle status, archive/soft-delete fields, custom fields, comments, attachments, and activity history. Add `EntityStatusHistory`, `EntityAttachment`, and approval reviewer/action data.
+Permission keys are scoped actions (e.g. `users.read`, `users.write`, `users.roles.write`, `staff.write`, `records.read`, `records.write`, `records.approve`, `tasks.write`, `files.read`, `files.write`, `reports.read`, `audit.read`, `settings.organization.write`, `settings.security.write`). Defaults:
 
-### Operations
+| Capability | Super admin | Admin | Manager | Staff | User |
+| --- | --- | --- | --- | --- | --- |
+| Global settings, roles, admin promotion, audit | All | No super-admin/account-secret operations; delegated settings only | No | No | No |
+| Users/staff/teams | All | Organization-scoped, delegated; cannot remove/downgrade super admin | Assigned departments/teams, no admin accounts | Own profile only | Own profile only |
+| Records/tasks/approvals | All; no separation-of-duties bypass unless policy explicitly allows | Organization-scoped permissions | Assigned department/team | Assigned items; permitted comments/uploads | Own submissions/notifications only |
+| Files/reports/communications | All subject to privacy classification | Delegated and scoped | Assigned scope | Assigned scope | Own files/notifications only |
 
-- `Task`, subtasks/recurrence metadata, assignments, comments, attachments, reminders.
-- `Notification`, notification preferences, templates, delivery/read history.
-- `File`, storage key, original metadata, visibility, folder, scan status, uploader, deletion/restore fields.
-- `AuditLog` with actor, action, entity, safe description, timestamp, and optional privacy-reviewed request metadata.
-- `SystemSetting` with typed/validated values and category-level permissions.
+Role grants never defeat object/tenant ownership, privacy classification, account-state checks, or separation of duties. Bootstrap a single super-admin role; disallow deleting/downgrading the final active super admin. Protect self-escalation, peer-admin changes, another user's private data, and exports with server policy tests. Define admin-specific delegated permissions in DB; avoid an unconditional string-role shortcut.
 
-Use transactions for role changes, approval transitions, destructive actions, invitation flows, and multi-record bulk operations. Add indexes for email, status, organization, assignee, created dates, due dates, and searchable foreign keys. Avoid unbounded relations and N+1 reads.
+## Routes, UI, and API
 
-## 4. Authentication and authorization plan
+| Pages | Behavior/components |
+| --- | --- |
+| `/`, `/login`, `/verify-email`, `/forgot-password`, `/reset-password`, `/auth/error` | Truthful home, validated auth forms, generic recovery messaging, session/lockout feedback; registration only when configured. |
+| `/dashboard` | Guarded shell; actual aggregate queries for users/records/tasks/approvals; recent activity/alerts, date and department filters, day/week/month/year charts, CSV export, permission-filtered widgets. |
+| `/users`, `/users/new`, `/users/[id]`, `/roles`, `/permissions`, `/departments`, `/teams`, `/staff` | Reusable list/detail/form; filters/sort/page/search, import/export, bulk actions, notes, invites, sessions, staff assignments, scoped edits. |
+| `/records`, `/records/new`, `/records/[id]` | CRUD, archive/restore/soft-delete, reviewer and history, comments/notes, tags/categories/custom fields, printable details, CSV, status transitions. |
+| `/tasks`, `/tasks/calendar`, `/tasks/kanban`, `/notifications`, `/files` | Lists and alternate task views; reminders; notification inbox/preferences; upload/search/preview/restore/download, access-controlled signed links. |
+| `/reports`, `/audit-logs`, `/settings/{organization,security,notifications,files,system}`, `/profile`, `/sessions` | Sensitive reports and exports; filtered safe audit reads; category-level settings checks; own profile and device revocation. |
 
-1. Select Auth.js credentials/email adapter or an equivalent secure implementation.
-2. Hash passwords with an adaptive algorithm and enforce a configurable strength policy.
-3. Implement login, logout, registration policy, email verification, forgot/reset password, secure sessions, remember-me, suspension, and logout-all-devices.
-4. Add rate limiting and failed-login tracking before exposing login publicly.
-5. Define centralized permission constants and policy functions such as `canManageUsers`, `canReadRecord`, `canApproveRecord`, and `canAccessSetting`.
-6. Apply policy checks in every server action and API route, including object ownership/team/department scope.
-7. Prevent administrator self-escalation and protect the Super Administrator from downgrade/removal.
-8. Design 2FA and social-login interfaces without enabling incomplete flows in production.
-9. Add tests for unauthenticated, normal-user, manager, administrator, and super-administrator access.
+API: `/api/v1/auth/{login,logout,verify-email,forgot-password,reset-password,sessions}`, `/api/v1/users` and `/api/v1/users/[id]` (status, roles, invitation, session subroutes), `/api/v1/{departments,teams,staff}`, `/api/v1/records` and `/api/v1/records/[id]/{status,comments,attachments}`, `/api/v1/{tasks,notifications,files,reports,audit-logs,settings}`, `/api/v1/files/[id]/download`, CSV import/export routes, and `/api/v1/health` (no sensitive details). Route methods and payload/error/permission tables go in `docs/api.md` or generated OpenAPI with security schemes. Mutation-specific rate limits and idempotency for imports/invitations; never expose arbitrary storage paths.
 
-## 5. Route and page plan
+UI system: extend the existing color tokens, `Button`, `Card`, and Tailwind config; add accessible sidebar/topbar/breadcrumbs, mobile drawer, light/dark toggle, cards, RHF/Zod form fields, reusable server-paginated table with debounced search and allowlisted filters/sorting, date ranges/saved views, dialogs/confirmations, toast, loading skeleton, empty/error/retry states, and keyboard-visible focus. Dialogs manage focus/escape; fields associate errors; status text supplements colors. Test mobile/tablet/desktop and WCAG 2.2 AA target. Shared components do not embed permission enforcement; route/service guards do.
 
-### Public/auth routes
+## Delivery phases and exit gates
 
-- `/login`
-- `/register` if enabled by settings
-- `/verify-email`
-- `/forgot-password`
-- `/reset-password`
-- `/auth/error`
+Complete each phase in a reviewable change, then report **files changed, commands run/outcomes, tests completed, known issues/assumptions, next phase**. Do not claim a later phase is complete because scaffolding exists.
 
-### Protected routes
+1. **Inspect (completed in this planning pass):** Audit the checkout and original docs/config; record real inventory and blockers in `docs/repository-audit.md`. No application code touched.
+2. **Plan (this pass):** Reconcile previous plan with actual repo, specify models, routes, components, RBAC, acceptance tests, security, deployment, sequencing in this document.
+3. **Confirm only material ambiguity:** Use the neutral `Record` and explicitly state matx purpose unknown; seek actual entity name/business workflow before any domain-specific rules. Document defaults for registration, organization scope, providers, and privacy gates.
+4. **Foundation:** Fix `.mjs` syntax and Next/ESLint compatibility; pin Node/package manager, create lockfile from verified install, baseline environment validation, truthful home copy, error boundaries, Vitest/Playwright config, README/setup and Copilot guidance. Gate: clean install, lint, typecheck, unit smoke test, build succeed.
+5. **Database:** Replace placeholder schema with normalized models above, checked-in PostgreSQL migrations and development-only seed; add `src/lib/db`, transaction and scoped pagination helpers. Gate: migration from empty DB and DB constraint/soft-delete tests.
+6. **Authentication/RBAC:** Implement credential flow, verification/reset, lockout, sessions/remember-me/logout-all, central policies, server guards, role management, revocation, audited actions. Gate: unauthenticated/normal-user denial, scoped manager and admin escalation negative tests.
+7. **Shared shell/design:** Accessible protected layout, mobile navigation, theme, common form/table/filter/dialog/confirm/skeleton/error components. Gate: component, keyboard, focus, contrast and responsive tests.
+8. **Dashboard:** Authenticated, DB-backed metrics, bounded trends, charts, filters/export/activity/alerts; no invented data. Gate: query aggregation tests (including empty data and failed query) and E2E guard.
+9. **Identity/organization:** Users/staff/roles/departments/teams/profile/invites, search, pagination, status, CSV, bulk updates, permissions and audited actions. Gate: cross-user/tenant access denial and critical CRUD E2E.
+10. **Records/approvals:** Generic Record CRUD, statuses (draft/submitted/under-review/approved/rejected/needs-changes/archived), reviewer assignments, separation-of-duties, history, comments/attachments/tags/custom fields/import/export. Gate: atomic transitions, denial, deleted-row invisibility, approval and CSV tests.
+11. **Operations:** Tasks/list/calendar/Kanban, recurring scheduling and reminders; notifications/preferences/templates; private file adapter and scanning gate, download authorization; communications only if applicability clarified; reports, safe audit logs and settings. Gate: scoped queries, upload type/size denial, notification delivery, report/export privacy and workflow E2E.
+12. **Security/docs/tests:** Rate limits, CSRF, security headers, privacy/data retention, error handling, hardened upload and provider config; API/schema/architecture/security/admin/troubleshooting guides; unit/component/API/DB/E2E/security/accessibility tests.
+13. **Verification:** Run format:check, lint, typecheck, unit/component tests, DB integration on migrated PostgreSQL, Playwright role/workflow/mobile tests, dependency audit, and production build from clean install. Track failures and repair scoped defects.
+14. **Release review:** Independently assess security, access control, WCAG, responsive behavior, performance/N+1, backup/restore, deployment and rollback; only declare production ready once all release gates and external-provider/privacy decisions are satisfied.
 
-- `/dashboard`
-- `/users`, `/users/new`, `/users/[id]`
-- `/roles`, `/permissions`
-- `/departments`, `/teams`, `/staff`
-- `/records`, `/records/new`, `/records/[id]`
-- `/tasks`, `/tasks/calendar`, `/tasks/kanban`
-- `/notifications`
-- `/files`
-- `/reports`
-- `/audit-logs`
-- `/settings/organization`, `/settings/security`, `/settings/notifications`, `/settings/files`, `/settings/system`
-- `/profile`, `/sessions`
+## Acceptance-test matrix
 
-Use route-level metadata, loading/error boundaries, authorization-aware navigation, and server-side page guards. API handlers should be versioned under `/api/v1` and use consistent success/error envelopes with pagination metadata.
+| Requirement | Narrowest automated check |
+| --- | --- |
+| Unauthenticated dashboard forbidden; normal user cannot reach admin pages | API/page E2E asserts redirect/401/403 and no protected data. |
+| Manager restricted to assigned features; admin cannot bypass server checks | Policy unit + API integration with allowed/denied tenant, department, privilege mutation. |
+| User cannot edit another private profile | API test with two users and forged IDs; preserve actor scope. |
+| Soft-deleted records absent from normal lists | DB/service integration + list E2E; restore requires permission. |
+| Invalid data produces useful errors | Zod unit and form/API component tests for labels and field association. |
+| Important mutations produce audit logs | Transactional DB test for role change, record approval, settings edit, upload, and export. |
+| Invalid file types rejected | Upload endpoint/API test with MIME spoofing, size limit, scanner failure. |
+| Search/sort/filter/pagination correct | Repository test for allowlists, counts, stable ordering, scoped results and CSV boundaries. |
+| Clean installation and type-safe build | CI installs from lockfile, migrates isolated DB, tests, `npm run typecheck`, `npm run build`. |
 
-## 6. Shared component and UX plan
+Add tests for rate-limit persistence, reset-token replay, session revocation, no self-approval, CSV formula injection, export authorization, XSS-safe rendering, keyboard/focus, empty/error states, and mobile navigation. Use synthetic fixtures and isolated test databases; never use seeded production credentials. For every feature, run narrow checks first, then affected dependents and mandatory release checks.
 
-Build the shell and design system before feature-specific screens:
+## Deployment and operations
 
-- Sidebar with responsive collapse and mobile drawer.
-- Top bar, profile menu, breadcrumbs, command/search entry point.
-- Buttons, inputs, selects, date ranges, badges, tabs, cards, dialogs, drawers, toasts, tooltips.
-- Accessible table with server pagination, sorting, filters, column visibility, bulk selection, and mobile fallback.
-- Form primitives using React Hook Form and Zod error mapping.
-- Loading skeletons, empty states, error states, retry actions, confirmation dialogs.
-- Theme provider with light/dark mode, visible focus states, keyboard navigation, and WCAG-conscious contrast.
+- Add multi-stage Dockerfile and Compose for **development/test PostgreSQL only**; use managed PostgreSQL and object storage for production. Run `prisma migrate deploy` before rolling app instances, confirm health, then cut over; document reversible migration/backup strategy and restore test.
+- GitHub Actions: pinned Node, immutable install (`npm ci` after choosing npm/committing lockfile), format/lint/typecheck, unit/components, PostgreSQL-backed integration, Playwright E2E, production build, dependency vulnerability audit, and secret scanning. Do not mark CI green if required checks were skipped.
+- Production env: database URL, separate secret for session signing, trusted app URL, storage bucket/endpoint credentials, email adapter credentials, retention/privacy settings. `.env.example` contains *names and nonfunctional examples*, never working secrets. Validate env at startup and fail closed for required integrations.
+- Define privacy-conscious request logs, separate structured audit logs, health/readiness endpoints without secrets, retention, secure backups, incident response contacts and rollback playbook. Limit upload size/type before persistence and avoid public storage by default.
+- Documentation to deliver: `README.md` (install/migrate/seed/run/test/build/deploy), `docs/{architecture,database,api,roles-and-permissions,security,administrator-guide,troubleshooting}.md`, and `.github/copilot-instructions.md` (product/stack/structure/conventions/commands/auth/RBAC/security/tests/important files/unrelated-change rule).
 
-## 7. Delivery phases and file groups
+## Current pass and next handoff
 
-### Phase 1 — Foundation
-
-Create the Next.js app, package scripts, strict TypeScript, Tailwind/shadcn setup, ESLint/Prettier, environment validation, root layout, basic README, `.env.example`, and CI skeleton. No business feature should be represented by hard-coded fake production data.
-
-### Phase 2 — Database
-
-Create Prisma schema, database client, migrations, seed data for development only, repository conventions, pagination/filter helpers, and database documentation.
-
-### Phase 3 — Authentication/RBAC
-
-Create auth configuration, session helpers, password/token flows, rate-limit adapter, policy/permission modules, protected layout, and security tests.
-
-### Phase 4 — Shell/design system
-
-Create the navigation shell and reusable UI/form/table primitives. Verify keyboard and mobile behavior before adding large feature screens.
-
-### Phase 5 — Dashboard
-
-Add service queries for totals, trends, alerts, registrations, tasks, and activity. Add date/department filters, charts, export, and loading/empty/error states.
-
-### Phase 6 — Users and organization
-
-Implement users, profiles, invitations, role/permission management, departments, teams, staff, filters, pagination, CSV import/export, dangerous-action confirmation, and audit events.
-
-### Phase 7 — Records and approvals
-
-Confirm the main entity, then implement reusable CRUD, lifecycle statuses, assignment, categories/tags, custom fields, comments, attachments, status history, approval rules, and separation-of-duties enforcement.
-
-### Phase 8 — Tasks/notifications/files
-
-Implement task list/calendar/Kanban views, recurring-task architecture, notification center/preferences/templates, email adapter, secure storage abstraction, signed downloads, upload validation, and scan integration point.
-
-### Phase 9 — Reports/audit/settings
-
-Implement report query services, export layouts, saved filters, scheduled-report interface, searchable audit logs, organization/security/file/system settings, and privacy-safe logging.
-
-### Phase 10 — Hardening/release
-
-Complete unit/component/API/database/E2E tests, accessibility checks, security tests, dependency scanning, Docker, GitHub Actions, API docs, admin guide, troubleshooting, migration verification, and clean-install/build verification.
-
-## 8. Testing strategy
-
-- **Unit:** permission policies, validators, pagination/filter parsers, security utilities, export formatters.
-- **Component:** forms, tables, dialogs, navigation, error/empty/loading states.
-- **API/integration:** authentication, authorization, CRUD, transactions, audit creation, file validation.
-- **Database:** migrations, unique constraints, soft deletion, status history, scoped queries.
-- **E2E:** login, protected dashboard, role restrictions, user CRUD, approvals, files, tasks, reports, settings, mobile navigation.
-- **Security:** IDOR/BOLA, privilege escalation, rate limiting, invalid uploads, XSS-safe rendering, secret leakage checks.
-- **Accessibility:** keyboard navigation, focus management, labels, error association, headings, table semantics, contrast.
-
-Acceptance tests from the product brief must be explicit and run in CI. A clean clone must install, migrate/seed a development database, type-check, lint, test, and build successfully.
-
-## 9. Deployment and operations
-
-Provide Docker support for the application and PostgreSQL development environment. Add GitHub Actions jobs for install/cache, formatting/lint, type-check, unit/integration tests, E2E where infrastructure permits, build, dependency audit, and secret scanning. Document environment variables without real credentials, migration deployment order, backups, logs, health checks, and rollback expectations.
-
-External integrations must use interfaces:
-
-- `StorageProvider`: local development and S3-compatible production adapter.
-- `EmailProvider`: local/dev logging adapter and Resend-compatible production adapter.
-- `VirusScanner`: no-op development adapter and configurable production service.
-- `PushProvider`/scheduled reports: implementation-ready interface, disabled until configured.
-
-## 10. Documentation deliverables
-
-Maintain:
-
-- `README.md` with setup, scripts, environment, database, testing, build, and deployment.
-- `docs/repository-audit.md`.
-- `docs/implementation-plan.md`.
-- `docs/architecture.md`.
-- `docs/database.md`.
-- `docs/api.md` or generated OpenAPI documentation.
-- `docs/security.md`.
-- `docs/roles-and-permissions.md`.
-- `docs/administrator-guide.md`.
-- `docs/troubleshooting.md`.
-- `.github/copilot-instructions.md` with architecture and modification boundaries.
-
-## 11. Risks and decisions
-
-1. **Main entity unresolved:** confirm the business record before domain-specific schema/UI work.
-2. **Authentication provider unresolved:** choose Auth.js versus a dedicated secure credentials service before implementation.
-3. **Email/storage/scanning providers unresolved:** use adapters and local implementations first.
-4. **Privacy requirements unresolved:** confirm retention and lawful use of IP/user-agent data before audit logging those fields.
-5. **Multi-tenancy scope unresolved:** design organization scoping now, but confirm whether cross-organization administration is needed.
-6. **Billing requirement conditional:** keep billing outside the first slice unless the organization explicitly requires it.
-
-## 12. Completion checklist per phase
-
-After every phase, report:
-
-- Files created or changed.
-- Commands run and their outcomes.
-- Tests completed.
-- Known issues and security/accessibility implications.
-- Any assumptions made.
-- The next recommended phase.
-
-No phase should silently modify unrelated files or remove existing tests/configuration. Since the current repository contains only `README.md`, the foundation phase may add the proposed structure while preserving that README’s project identity and documenting its expansion.
+- **Files updated this pass:** `docs/repository-audit.md`, `docs/implementation-plan.md`, and `.github/copilot-instructions.md` (terminology/status only).
+- **Inspections:** repo inventory, key source/config, Prisma schema, prior docs, scripts, runtime report, and available knowledge; see validation record for checks.
+- **Tests:** Document consistency checks only; no application/dependency tests were attempted because this is the planning pass and dependencies are not installed.
+- **Known issues:** Invalid `next.config.mjs`, hard-coded marketing stats, unprotected/missing dashboard, unfinished data/auth, absent lockfile/migrations/tests/CI, and unspecified domain/privacy/provider decisions.
+- **Next:** Phase 4 foundation repair, then Phase 5 schema/migrations. Production readiness is **not claimed**.
